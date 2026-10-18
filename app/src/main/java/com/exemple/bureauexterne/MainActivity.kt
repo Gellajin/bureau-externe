@@ -48,7 +48,7 @@ class MainActivity : Activity() {
         info.setPadding(0, 0, 0, pad / 2)
 
         val swFull = Switch(this)
-        swFull.text = "Plein écran sans bordure (taille de l'écran externe)"
+        swFull.text = "Mode plein écran (désactivé : mode petit écran avec fenêtres)"
         swFull.isChecked = prefs.getBoolean("fullscreen", true)
         swFull.setOnCheckedChangeListener { _, on ->
             prefs.edit().putBoolean("fullscreen", on).apply()
@@ -75,6 +75,9 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 Toast.makeText(this, "Ouvre Réglages > Accessibilité", Toast.LENGTH_LONG).show()
             }
+        })
+        root.addView(makeButton("2b. Si l'activation est grisée : infos de l'appli") {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
         })
         root.addView(makeButton("3. Démarrer la barre et le bureau") { startBar() })
         root.addView(makeButton("Arrêter la barre") {
@@ -110,11 +113,17 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        status.text = if (Settings.canDrawOverlays(this)) {
-            "Autorisation accordée. Branche ton écran externe, puis appuie sur le bouton 3."
+        val overlay = if (Settings.canDrawOverlays(this)) {
+            "Autorisation d'affichage accordée."
         } else {
-            "Autorisation manquante : appuie sur le bouton 1 et active-la pour cette appli."
+            "Autorisation d'affichage manquante : bouton 1."
         }
+        val access = if (NavService.instance != null) {
+            "Boutons Retour et Récents : actifs."
+        } else {
+            "Boutons Retour et Récents : non activés (boutons 2 et 2b)."
+        }
+        status.text = overlay + "\n" + access
         info.text = displayInfo()
     }
 

@@ -36,7 +36,7 @@ class DotsView(c: Context) : View(c) {
     }
 }
 
-/** Boutons de navigation : 0 = retour, 1 = accueil, 2 = récents, 3 = réduire la barre. */
+/** Boutons : 0 = retour, 1 = accueil, 2 = récents, 3 = réduire la barre, 4 = mode petit écran, 5 = mode plein écran. */
 class NavIconView(c: Context, private val kind: Int) : View(c) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val path = Path()
@@ -59,6 +59,26 @@ class NavIconView(c: Context, private val kind: Int) : View(c) {
             canvas.drawCircle(w * 0.5f, h * 0.5f, w * 0.2f, paint)
         } else if (kind == 2) {
             canvas.drawRoundRect(w * 0.3f, h * 0.3f, w * 0.7f, h * 0.7f, w * 0.06f, w * 0.06f, paint)
+        } else if (kind == 4) {
+            // mode petit écran : une fenêtre avec sa barre de titre
+            canvas.drawRoundRect(w * 0.24f, h * 0.3f, w * 0.76f, h * 0.7f, w * 0.05f, w * 0.05f, paint)
+            canvas.drawLine(w * 0.24f, h * 0.4f, w * 0.76f, h * 0.4f, paint)
+        } else if (kind == 5) {
+            // mode plein écran : quatre coins
+            path.reset()
+            path.moveTo(w * 0.3f, h * 0.42f)
+            path.lineTo(w * 0.3f, h * 0.3f)
+            path.lineTo(w * 0.42f, h * 0.3f)
+            path.moveTo(w * 0.58f, h * 0.3f)
+            path.lineTo(w * 0.7f, h * 0.3f)
+            path.lineTo(w * 0.7f, h * 0.42f)
+            path.moveTo(w * 0.7f, h * 0.58f)
+            path.lineTo(w * 0.7f, h * 0.7f)
+            path.lineTo(w * 0.58f, h * 0.7f)
+            path.moveTo(w * 0.42f, h * 0.7f)
+            path.lineTo(w * 0.3f, h * 0.7f)
+            path.lineTo(w * 0.3f, h * 0.58f)
+            canvas.drawPath(path, paint)
         } else {
             path.reset()
             path.moveTo(w * 0.3f, h * 0.4f)

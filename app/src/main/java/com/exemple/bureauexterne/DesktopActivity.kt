@@ -3,11 +3,11 @@ package com.exemple.bureauexterne
 import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.app.Activity
-import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.view.Display
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -16,6 +16,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.GridView
 import android.widget.ImageView
+import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.VideoView
@@ -26,11 +27,23 @@ class DesktopActivity : Activity() {
     private lateinit var wallLayer: FrameLayout
     private lateinit var grid: GridView
     private lateinit var hint: TextView
+    private lateinit var anchor: View
     private var animator: ValueAnimator? = null
+    private var lastX = 0f
+    private var lastY = 0f
     private val prefs by lazy { getSharedPreferences("bureau", MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Si le système a ouvert le bureau sur le téléphone, on le referme et on réessaie.
+        if (windowManager.defaultDisplay.displayId == Display.DEFAULT_DISPLAY) {
+            Toast.makeText(this, "Le bureau doit s'ouvrir sur l'écran externe", Toast.LENGTH_SHORT).show()
+            BarService.instance?.retryDesktop()
+            finish()
+            return
+        }
+
         val d = resources.displayMetrics.density
         fun dp(v: Int): Int = (v * d).toInt()
         val match = ViewGroup.LayoutParams.MATCH_PARENT
@@ -61,11 +74,16 @@ class DesktopActivity : Activity() {
         hint.gravity = Gravity.CENTER
         root.addView(hint, FrameLayout.LayoutParams(wrap, wrap, Gravity.CENTER))
 
+        // Point d'ancrage invisible pour les petits menus
+        anchor = View(this)
+        root.addView(anchor, FrameLayout.LayoutParams(1, 1))
+
         setContentView(root)
     }
 
     override fun onResume() {
         super.onResume()
+        if (!::wallLayer.isInitialized) return
         renderWallpaper()
         renderIcons()
     }
@@ -79,11 +97,13 @@ class DesktopActivity : Activity() {
     // ---------- Clic droit à la souris et touche F5 ----------
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (ev.actionMasked == MotionEvent.ACTION_DOWN &&
-            (ev.buttonState and MotionEvent.BUTTON_SECONDARY) != 0
-        ) {
-            showMenu()
-            return true
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            lastX = ev.x
+            lastY = ev.y
+            if ((ev.buttonState and MotionEvent.BUTTON_SECONDARY) != 0) {
+                showMenu()
+                return true
+            }
         }
         return super.dispatchTouchEvent(ev)
     }
@@ -94,6 +114,86 @@ class DesktopActivity : Activity() {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    // ---------- Petits menus ----------
+
+    private fun popup(labels: List<String>, onPick: (Int) -> Unit) {
+        anchor.x = lastX
+        anchor.y = lastY
+        val pm = PopupMenu(this, anchor)
+        for (i in labels.indices) {
+            pm.menu.add(0, i, i, labels[i])
+        }
+        pm.setOnMenuItemClickListener { item ->
+            onPick(item.itemId)
+            true
+        }
+        pm.show()
+    }
+
+    private fun showMenu() {
+        val labels = listOf(
+            "Actualiser",
+            "Changer le fond d'écran",
+            "Ajouter une appli au bureau",
+            "Retirer une appli du bureau",
+            "Afficher la barre des tâches"
+        )
+        popup(labels) { which ->
+            when (which) {
+                0 -> refresh()
+                1 -> anchor.post { wallpaperMenu() }
+                2 -> anchor.post { addMenu() }
+                3 -> anchor.post { removeMenu() }
+                else -> BarService.instance?.expand()
+            }
+        }
+    }
+
+    private fun wallpaperMenu() {
+        popup(Wallpapers.names.toList()) { which ->
+            prefs.edit().putInt("wp", which).remove("wpUri").apply()
+            renderWallpaper()
+        }
+    }
+
+    private fun addMenu() {
+        val all = Launcher.loadApps(this)
+        popup(all.map { it.label }) { which ->
+            val s = prefs.getStringSet("desk", emptySet<String>())!!.toMutableSet()
+            s.add(all[which].pkg)
+            prefs.edit().putStringSet("desk", s).apply()
+            renderIcons()
+        }
+    }
+
+    private fun removeMenu() {
+        val chosen = prefs.getStringSet("desk", emptySet<String>()) ?: emptySet<String>()
+        val list = Launcher.loadApps(this).filter { chosen.contains(it.pkg) }
+        if (list.isEmpty()) {
+            Toast.makeText(this, "Aucune appli sur le bureau", Toast.LENGTH_SHORT).show()
+            return
+        }
+        popup(list.map { it.label }) { which ->
+            val s = prefs.getStringSet("desk", emptySet<String>())!!.toMutableSet()
+            s.remove(list[which].pkg)
+            prefs.edit().putStringSet("desk", s).apply()
+            renderIcons()
+        }
+    }
+
+    private fun itemMenu(app: AppItem) {
+        popup(listOf("Ouvrir", "Retirer du bureau")) { which ->
+            if (which == 0) {
+                openApp(app.pkg)
+            } else {
+                val s = prefs.getStringSet("desk", emptySet<String>())!!.toMutableSet()
+                s.remove(app.pkg)
+                prefs.edit().putStringSet("desk", s).apply()
+                renderIcons()
+            }
+        }
     }
 
     // ---------- Fond d'écran ----------
@@ -212,87 +312,5 @@ class DesktopActivity : Activity() {
         renderWallpaper()
         renderIcons()
         Toast.makeText(this, "Bureau actualisé", Toast.LENGTH_SHORT).show()
-    }
-
-    // ---------- Menus ----------
-
-    private fun showMenu() {
-        val items = arrayOf(
-            "Actualiser",
-            "Changer le fond d'écran",
-            "Ajouter une appli au bureau",
-            "Retirer une appli du bureau",
-            "Afficher la barre des tâches"
-        )
-        AlertDialog.Builder(this)
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> refresh()
-                    1 -> wallpaperMenu()
-                    2 -> addMenu()
-                    3 -> removeMenu()
-                    else -> BarService.instance?.expand()
-                }
-            }
-            .show()
-    }
-
-    private fun wallpaperMenu() {
-        AlertDialog.Builder(this)
-            .setTitle("Fond d'écran")
-            .setItems(Wallpapers.names) { _, which ->
-                prefs.edit().putInt("wp", which).remove("wpUri").apply()
-                renderWallpaper()
-            }
-            .show()
-    }
-
-    private fun addMenu() {
-        val all = Launcher.loadApps(this)
-        val labels = all.map { it.label }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Ajouter au bureau")
-            .setItems(labels) { _, which ->
-                val s = prefs.getStringSet("desk", emptySet<String>())!!.toMutableSet()
-                s.add(all[which].pkg)
-                prefs.edit().putStringSet("desk", s).apply()
-                renderIcons()
-            }
-            .show()
-    }
-
-    private fun removeMenu() {
-        val chosen = prefs.getStringSet("desk", emptySet<String>()) ?: emptySet<String>()
-        val list = Launcher.loadApps(this).filter { chosen.contains(it.pkg) }
-        if (list.isEmpty()) {
-            Toast.makeText(this, "Aucune appli sur le bureau", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val labels = list.map { it.label }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Retirer du bureau")
-            .setItems(labels) { _, which ->
-                val s = prefs.getStringSet("desk", emptySet<String>())!!.toMutableSet()
-                s.remove(list[which].pkg)
-                prefs.edit().putStringSet("desk", s).apply()
-                renderIcons()
-            }
-            .show()
-    }
-
-    private fun itemMenu(app: AppItem) {
-        AlertDialog.Builder(this)
-            .setTitle(app.label)
-            .setItems(arrayOf("Ouvrir", "Retirer du bureau")) { _, which ->
-                if (which == 0) {
-                    openApp(app.pkg)
-                } else {
-                    val s = prefs.getStringSet("desk", emptySet<String>())!!.toMutableSet()
-                    s.remove(app.pkg)
-                    prefs.edit().putStringSet("desk", s).apply()
-                    renderIcons()
-                }
-            }
-            .show()
     }
 }

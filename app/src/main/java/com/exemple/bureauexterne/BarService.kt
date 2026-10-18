@@ -52,6 +52,7 @@ class BarService : Service() {
     private var curDisplay: Display? = null
     private var lastClose = 0L
     private var collapsed = false
+    private var desktopTries = 0
 
     private val prefs by lazy { getSharedPreferences("bureau", MODE_PRIVATE) }
 
@@ -120,6 +121,7 @@ class BarService : Service() {
         displayId = d.displayId
         curDisplay = d
         collapsed = false
+        desktopTries = 0
         val base = createDisplayContext(d)
         val c = ContextThemeWrapper(base, android.R.style.Theme_Material)
         ctx = c
@@ -142,7 +144,28 @@ class BarService : Service() {
 
     private fun launchDesktop() {
         val disp = curDisplay ?: return
-        Launcher.launchDesktop(this, disp)
+        Launcher.launchDesktop(this, disp, false)
+    }
+
+    /** Appelé par le bureau s'il s'est ouvert sur le téléphone au lieu de l'écran externe. */
+    fun retryDesktop() {
+        if (desktopTries >= 2) return
+        desktopTries++
+        handler.postDelayed({
+            val disp = curDisplay
+            if (disp != null) {
+                Launcher.launchDesktop(this, disp, true)
+            }
+        }, 400)
+    }
+
+    private fun isFullscreen(): Boolean = prefs.getBoolean("fullscreen", true)
+
+    private fun toggleMode() {
+        val full = !isFullscreen()
+        prefs.edit().putBoolean("fullscreen", full).apply()
+        toast(if (full) "Mode plein écran" else "Mode petit écran (fenêtres)")
+        drawBar()
     }
 
     // ---------- Applis épinglées ----------
@@ -175,7 +198,7 @@ class BarService : Service() {
         val auto = prefs.getBoolean("autoshrink", true)
         val density = ctx?.resources?.displayMetrics?.density ?: 1f
         val reserve = if (auto) 0 else (52 * density).toInt()
-        Launcher.launch(this, pkg, disp, reserve, prefs.getBoolean("fullscreen", true))
+        Launcher.launch(this, pkg, disp, reserve, isFullscreen())
         onAppLaunched()
     }
 
@@ -221,7 +244,19 @@ class BarService : Service() {
         val d = c.resources.displayMetrics.density
         val view: View
         val lp: WindowManager.LayoutParams
-        if (collapsed) {
+        if (collapsed && isFullscreen()) {
+            // Plein écran : aucune icône. Un bord invisible en bas réaffiche la barre.
+            view = buildHotZone(c)
+            lp = WindowManager.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                (8 * d).toInt(),
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            )
+            lp.gravity = Gravity.BOTTOM
+        } else if (collapsed) {
+            // Mode petit écran : un petit bouton rond
             view = buildCollapsed(c, d)
             lp = WindowManager.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -263,6 +298,28 @@ class BarService : Service() {
         btn.addView(DotsView(c), FrameLayout.LayoutParams(dp(48), dp(48)))
         btn.setOnClickListener { expand() }
         return btn
+    }
+
+    /** Bande invisible en bas de l'écran : la souris (ou un doigt) dessus réaffiche la barre. */
+    private fun buildHotZone(c: Context): View {
+        val v = View(c)
+        v.setOnHoverListener { _, e ->
+            if (e.action == MotionEvent.ACTION_HOVER_ENTER) {
+                expand()
+                true
+            } else {
+                false
+            }
+        }
+        v.setOnTouchListener { _, e ->
+            if (e.action == MotionEvent.ACTION_DOWN) {
+                expand()
+                true
+            } else {
+                false
+            }
+        }
+        return v
     }
 
     private fun buildBar(c: Context, d: Float): View {
@@ -308,12 +365,14 @@ class BarService : Service() {
         // Espace
         bar.addView(View(c), LinearLayout.LayoutParams(0, 1, 1f))
 
-        // Boutons : retour, accueil, récents, réduire
-        val kinds = intArrayOf(0, 1, 2, 3)
+        // Boutons : mode (petit écran / plein écran), retour, accueil, récents, réduire
+        val kinds = intArrayOf(if (isFullscreen()) 5 else 4, 0, 1, 2, 3)
         for (k in kinds) {
             val v = NavIconView(c, k)
             v.setOnClickListener {
-                if (k == 0) {
+                if (k == 4 || k == 5) {
+                    toggleMode()
+                } else if (k == 0) {
                     navAction(AccessibilityService.GLOBAL_ACTION_BACK)
                 } else if (k == 1) {
                     expand()
