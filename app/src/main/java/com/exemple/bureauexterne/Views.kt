@@ -4,7 +4,9 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.drawable.Drawable
+import android.os.SystemClock
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
@@ -16,11 +18,13 @@ import android.widget.TextView
 
 data class AppItem(val label: String, val pkg: String, val icon: Drawable)
 
+/** Le bouton aux neuf points. */
 class DotsView(c: Context) : View(c) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     override fun onDraw(canvas: Canvas) {
         paint.color = Color.WHITE
+        paint.style = Paint.Style.FILL
         val w = width.toFloat()
         val h = height.toFloat()
         val r = w * 0.07f
@@ -32,6 +36,64 @@ class DotsView(c: Context) : View(c) {
     }
 }
 
+/** Boutons de navigation : 0 = retour, 1 = accueil, 2 = récents, 3 = réduire la barre. */
+class NavIconView(c: Context, private val kind: Int) : View(c) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val path = Path()
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        paint.color = Color.WHITE
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = w * 0.06f
+        paint.strokeJoin = Paint.Join.ROUND
+        if (kind == 0) {
+            path.reset()
+            path.moveTo(w * 0.65f, h * 0.28f)
+            path.lineTo(w * 0.32f, h * 0.5f)
+            path.lineTo(w * 0.65f, h * 0.72f)
+            path.close()
+            canvas.drawPath(path, paint)
+        } else if (kind == 1) {
+            canvas.drawCircle(w * 0.5f, h * 0.5f, w * 0.2f, paint)
+        } else if (kind == 2) {
+            canvas.drawRoundRect(w * 0.3f, h * 0.3f, w * 0.7f, h * 0.7f, w * 0.06f, w * 0.06f, paint)
+        } else {
+            path.reset()
+            path.moveTo(w * 0.3f, h * 0.4f)
+            path.lineTo(w * 0.5f, h * 0.6f)
+            path.lineTo(w * 0.7f, h * 0.4f)
+            canvas.drawPath(path, paint)
+        }
+    }
+}
+
+/** Fond d'écran animé : ciel étoilé qui scintille. */
+class StarsView(c: Context) : View(c) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rnd = java.util.Random(7)
+    private val xs = FloatArray(160) { rnd.nextFloat() }
+    private val ys = FloatArray(160) { rnd.nextFloat() }
+    private val ph = FloatArray(160) { rnd.nextFloat() * 6.28f }
+    private val sz = FloatArray(160) { 0.6f + rnd.nextFloat() * 1.8f }
+
+    override fun onDraw(canvas: Canvas) {
+        canvas.drawColor(Color.parseColor("#070A1A"))
+        paint.style = Paint.Style.FILL
+        val t = SystemClock.uptimeMillis() / 1000f
+        val d = resources.displayMetrics.density
+        for (i in xs.indices) {
+            val s = Math.sin((t * 1.2f + ph[i]).toDouble()).toFloat()
+            val a = 0.35f + 0.65f * (0.5f + 0.5f * s)
+            paint.color = Color.argb((a * 255).toInt(), 255, 255, 255)
+            canvas.drawCircle(xs[i] * width, ys[i] * height, sz[i] * d, paint)
+        }
+        postInvalidateOnAnimation()
+    }
+}
+
+/** Une case du tiroir ou du bureau : icône + nom. */
 class AppAdapter(private val c: Context, private val items: List<AppItem>) : BaseAdapter() {
     override fun getCount(): Int = items.size
     override fun getItem(position: Int): Any = items[position]

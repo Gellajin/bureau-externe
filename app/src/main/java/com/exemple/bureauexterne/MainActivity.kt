@@ -2,6 +2,7 @@ package com.exemple.bureauexterne
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,9 +13,9 @@ import android.os.Bundle
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.Display
-import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -32,7 +33,6 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
-        root.gravity = Gravity.CENTER_VERTICAL
         root.setPadding(pad, pad, pad, pad)
 
         val title = TextView(this)
@@ -47,48 +47,52 @@ class MainActivity : Activity() {
         info.textSize = 14f
         info.setPadding(0, 0, 0, pad / 2)
 
-        val sw = Switch(this)
-        sw.text = "Plein écran sans bordure (taille de l'écran externe)"
-        sw.isChecked = prefs.getBoolean("fullscreen", true)
-        sw.setOnCheckedChangeListener { _, on ->
+        val swFull = Switch(this)
+        swFull.text = "Plein écran sans bordure (taille de l'écran externe)"
+        swFull.isChecked = prefs.getBoolean("fullscreen", true)
+        swFull.setOnCheckedChangeListener { _, on ->
             prefs.edit().putBoolean("fullscreen", on).apply()
         }
-        sw.setPadding(0, pad / 2, 0, pad / 2)
+        swFull.setPadding(0, pad / 2, 0, pad / 2)
 
-        val bPerm = Button(this)
-        bPerm.text = "1. Autoriser l'affichage par-dessus les autres applis"
-        bPerm.setOnClickListener { askOverlay() }
+        val swAuto = Switch(this)
+        swAuto.text = "Réduire la barre automatiquement quand je lance une appli"
+        swAuto.isChecked = prefs.getBoolean("autoshrink", true)
+        swAuto.setOnCheckedChangeListener { _, on ->
+            prefs.edit().putBoolean("autoshrink", on).apply()
+        }
+        swAuto.setPadding(0, pad / 2, 0, pad / 2)
 
-        val bStart = Button(this)
-        bStart.text = "2. Démarrer la barre"
-        bStart.setOnClickListener { startBar() }
-
-        val bStop = Button(this)
-        bStop.text = "Arrêter la barre"
-        bStop.setOnClickListener {
+        root.addView(title)
+        root.addView(status)
+        root.addView(info)
+        root.addView(swFull)
+        root.addView(swAuto)
+        root.addView(makeButton("1. Autoriser l'affichage par-dessus les autres applis") { askOverlay() })
+        root.addView(makeButton("2. Activer les boutons Retour / Récents (accessibilité)") {
+            try {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } catch (e: Exception) {
+                Toast.makeText(this, "Ouvre Réglages > Accessibilité", Toast.LENGTH_LONG).show()
+            }
+        })
+        root.addView(makeButton("3. Démarrer la barre et le bureau") { startBar() })
+        root.addView(makeButton("Arrêter la barre") {
             stopService(Intent(this, BarService::class.java))
             Toast.makeText(this, "Barre arrêtée", Toast.LENGTH_SHORT).show()
-        }
-
-        val bDev = Button(this)
-        bDev.text = "Options développeur (pour supprimer les bandes noires)"
-        bDev.setOnClickListener {
+        })
+        root.addView(makeButton("Fond d'écran du bureau") { wallpaperDialog() })
+        root.addView(makeButton("Options développeur (pour supprimer les bandes noires)") {
             try {
                 startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
             } catch (e: Exception) {
                 Toast.makeText(this, "Ouvre Réglages > Options pour les développeurs", Toast.LENGTH_LONG).show()
             }
-        }
+        })
 
-        root.addView(title)
-        root.addView(status)
-        root.addView(info)
-        root.addView(sw)
-        root.addView(bPerm)
-        root.addView(bStart)
-        root.addView(bStop)
-        root.addView(bDev)
-        setContentView(root)
+        val scroll = ScrollView(this)
+        scroll.addView(root)
+        setContentView(scroll)
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -97,10 +101,17 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun makeButton(label: String, action: () -> Unit): Button {
+        val b = Button(this)
+        b.text = label
+        b.setOnClickListener { action() }
+        return b
+    }
+
     override fun onResume() {
         super.onResume()
         status.text = if (Settings.canDrawOverlays(this)) {
-            "Autorisation accordée. Branche ton écran externe, puis appuie sur le bouton 2."
+            "Autorisation accordée. Branche ton écran externe, puis appuie sur le bouton 3."
         } else {
             "Autorisation manquante : appuie sur le bouton 1 et active-la pour cette appli."
         }
@@ -138,5 +149,48 @@ class MainActivity : Activity() {
         }
         startForegroundService(Intent(this, BarService::class.java))
         Toast.makeText(this, "Barre démarrée", Toast.LENGTH_SHORT).show()
+    }
+
+    // ---------- Fond d'écran ----------
+
+    private fun wallpaperDialog() {
+        val names = Wallpapers.names + "Image ou vidéo de mon téléphone…"
+        AlertDialog.Builder(this)
+            .setTitle("Fond d'écran du bureau")
+            .setItems(names) { _, which ->
+                if (which < Wallpapers.names.size) {
+                    prefs.edit().putInt("wp", which).remove("wpUri").apply()
+                    Toast.makeText(this, "Fond d'écran : " + Wallpapers.names[which], Toast.LENGTH_SHORT).show()
+                } else {
+                    pickMedia()
+                }
+            }
+            .show()
+    }
+
+    private fun pickMedia() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+        i.addCategory(Intent.CATEGORY_OPENABLE)
+        i.type = "*/*"
+        i.putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+        startActivityForResult(i, 42)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val uri = data?.data
+        if (requestCode == 42 && resultCode == RESULT_OK && uri != null) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: Exception) {
+            }
+            val type = contentResolver.getType(uri) ?: ""
+            prefs.edit()
+                .putInt("wp", -1)
+                .putString("wpUri", uri.toString())
+                .putString("wpType", if (type.startsWith("video")) "video" else "image")
+                .apply()
+            Toast.makeText(this, "Fond d'écran personnalisé enregistré", Toast.LENGTH_SHORT).show()
+        }
     }
 }

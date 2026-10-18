@@ -1,6 +1,6 @@
 package com.exemple.bureauexterne
 
-import android.app.ActivityOptions
+import android.accessibilityservice.AccessibilityService
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -9,14 +9,12 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
-import android.util.DisplayMetrics
 import android.view.ContextThemeWrapper
 import android.view.Display
 import android.view.Gravity
@@ -31,7 +29,17 @@ import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.Toast
 
+/**
+ * Barre des tâches sur l'écran externe (HDMI).
+ * - bouton à neuf points : tiroir de toutes les applis (appui long sur une appli : l'épingler)
+ * - boutons Retour, Accueil (affiche le bureau), Récents, Réduire
+ * - la barre se réduit toute seule en petit bouton quand on lance une appli
+ */
 class BarService : Service() {
+
+    companion object {
+        var instance: BarService? = null
+    }
 
     private lateinit var dm: DisplayManager
     private val handler = Handler(Looper.getMainLooper())
@@ -43,6 +51,7 @@ class BarService : Service() {
     private var displayId = -1
     private var curDisplay: Display? = null
     private var lastClose = 0L
+    private var collapsed = false
 
     private val prefs by lazy { getSharedPreferences("bureau", MODE_PRIVATE) }
 
@@ -62,6 +71,7 @@ class BarService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         startInForeground()
         dm = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         dm.registerDisplayListener(listener, handler)
@@ -71,6 +81,7 @@ class BarService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
+        instance = null
         try {
             dm.unregisterDisplayListener(listener)
         } catch (e: Exception) {
@@ -78,6 +89,8 @@ class BarService : Service() {
         removeAll()
         super.onDestroy()
     }
+
+    // ---------- Notification obligatoire pour un service qui reste actif ----------
 
     private fun startInForeground() {
         val nm = getSystemService(NotificationManager::class.java)
@@ -92,6 +105,8 @@ class BarService : Service() {
         startForeground(1, n)
     }
 
+    // ---------- Détection de l'écran externe ----------
+
     private fun sync() {
         val d = dm.displays.firstOrNull { it.displayId != Display.DEFAULT_DISPLAY }
         if (d == null) {
@@ -104,11 +119,13 @@ class BarService : Service() {
         removeAll()
         displayId = d.displayId
         curDisplay = d
+        collapsed = false
         val base = createDisplayContext(d)
         val c = ContextThemeWrapper(base, android.R.style.Theme_Material)
         ctx = c
         wm = c.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         drawBar()
+        handler.postDelayed({ launchDesktop() }, 400)
     }
 
     private fun removeAll() {
@@ -122,6 +139,13 @@ class BarService : Service() {
         }
         barView = null
     }
+
+    private fun launchDesktop() {
+        val disp = curDisplay ?: return
+        Launcher.launchDesktop(this, disp)
+    }
+
+    // ---------- Applis épinglées ----------
 
     private fun pins(): MutableSet<String> =
         prefs.getStringSet("pins", emptySet())!!.toMutableSet()
@@ -140,51 +164,48 @@ class BarService : Service() {
         return added
     }
 
-    private fun loadApps(): List<AppItem> {
-        val pm = packageManager
-        val i = Intent(Intent.ACTION_MAIN)
-        i.addCategory(Intent.CATEGORY_LAUNCHER)
-        return pm.queryIntentActivities(i, 0)
-            .filter { it.activityInfo.packageName != packageName }
-            .map { AppItem(it.loadLabel(pm).toString(), it.activityInfo.packageName, it.loadIcon(pm)) }
-            .sortedBy { it.label.lowercase() }
-    }
-
     private fun toast(s: String) {
         Toast.makeText(applicationContext, s, Toast.LENGTH_SHORT).show()
     }
 
-    private fun launch(pkg: String) {
-        val intent = packageManager.getLaunchIntentForPackage(pkg) ?: return
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        val opts = ActivityOptions.makeBasic()
-        opts.setLaunchDisplayId(displayId)
+    // ---------- Lancer une appli ----------
 
-        val disp = curDisplay
-        if (disp != null) {
-            val m = DisplayMetrics()
-            disp.getRealMetrics(m)
-            val density = ctx?.resources?.displayMetrics?.density ?: 1f
-            val barPx = (52 * density).toInt()
-            val full = prefs.getBoolean("fullscreen", true)
-            val rect = if (full) {
-                Rect(0, 0, m.widthPixels, m.heightPixels - barPx)
-            } else {
-                Rect(
-                    (m.widthPixels * 0.12).toInt(),
-                    (m.heightPixels * 0.06).toInt(),
-                    (m.widthPixels * 0.88).toInt(),
-                    (m.heightPixels * 0.84).toInt()
-                )
-            }
-            opts.setLaunchBounds(rect)
-        }
-        try {
-            startActivity(intent, opts.toBundle())
-        } catch (e: Exception) {
-            toast("Impossible d'ouvrir l'appli : " + e.message)
+    private fun launch(pkg: String) {
+        val disp = curDisplay ?: return
+        val auto = prefs.getBoolean("autoshrink", true)
+        val density = ctx?.resources?.displayMetrics?.density ?: 1f
+        val reserve = if (auto) 0 else (52 * density).toInt()
+        Launcher.launch(this, pkg, disp, reserve, prefs.getBoolean("fullscreen", true))
+        onAppLaunched()
+    }
+
+    /** Appelé quand une appli vient d'être lancée : la barre se réduit si l'option est active. */
+    fun onAppLaunched() {
+        closeDrawer()
+        if (prefs.getBoolean("autoshrink", true) && !collapsed) {
+            collapsed = true
+            drawBar()
         }
     }
+
+    /** Réaffiche la barre complète. */
+    fun expand() {
+        if (collapsed) {
+            collapsed = false
+            drawBar()
+        }
+    }
+
+    private fun navAction(action: Int) {
+        val s = NavService.instance
+        if (s == null) {
+            toast("Active le service d'accessibilité Bureau externe dans les Réglages")
+            return
+        }
+        s.performGlobalAction(action)
+    }
+
+    // ---------- La barre ----------
 
     private fun drawBar() {
         val c = ctx ?: return
@@ -198,21 +219,50 @@ class BarService : Service() {
             barView = null
         }
         val d = c.resources.displayMetrics.density
-        val view = buildBar(c, d)
-        val lp = WindowManager.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            (52 * d).toInt(),
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        )
-        lp.gravity = Gravity.BOTTOM
+        val view: View
+        val lp: WindowManager.LayoutParams
+        if (collapsed) {
+            view = buildCollapsed(c, d)
+            lp = WindowManager.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            )
+            lp.gravity = Gravity.BOTTOM or Gravity.START
+            lp.x = (8 * d).toInt()
+            lp.y = (8 * d).toInt()
+        } else {
+            view = buildBar(c, d)
+            lp = WindowManager.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                (52 * d).toInt(),
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            )
+            lp.gravity = Gravity.BOTTOM
+        }
         try {
             w.addView(view, lp)
             barView = view
         } catch (e: Exception) {
             toast("Impossible d'afficher la barre : " + e.message)
         }
+    }
+
+    /** La barre réduite : juste un petit bouton rond, un appui la réaffiche. */
+    private fun buildCollapsed(c: Context, d: Float): View {
+        fun dp(v: Int): Int = (v * d).toInt()
+        val btn = FrameLayout(c)
+        val bg = GradientDrawable()
+        bg.shape = GradientDrawable.OVAL
+        bg.setColor(Color.parseColor("#E6141820"))
+        btn.background = bg
+        btn.addView(DotsView(c), FrameLayout.LayoutParams(dp(48), dp(48)))
+        btn.setOnClickListener { expand() }
+        return btn
     }
 
     private fun buildBar(c: Context, d: Float): View {
@@ -224,6 +274,7 @@ class BarService : Service() {
         bar.setBackgroundColor(Color.parseColor("#E6141820"))
         bar.setPadding(dp(12), 0, dp(12), 0)
 
+        // Bouton des applications
         val btn = FrameLayout(c)
         val bg = GradientDrawable()
         bg.shape = GradientDrawable.OVAL
@@ -235,6 +286,7 @@ class BarService : Service() {
         btnLp.rightMargin = dp(14)
         bar.addView(btn, btnLp)
 
+        // Applis épinglées
         val pm = packageManager
         for (pkg in pins()) {
             try {
@@ -253,8 +305,32 @@ class BarService : Service() {
             }
         }
 
+        // Espace
         bar.addView(View(c), LinearLayout.LayoutParams(0, 1, 1f))
 
+        // Boutons : retour, accueil, récents, réduire
+        val kinds = intArrayOf(0, 1, 2, 3)
+        for (k in kinds) {
+            val v = NavIconView(c, k)
+            v.setOnClickListener {
+                if (k == 0) {
+                    navAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                } else if (k == 1) {
+                    expand()
+                    launchDesktop()
+                } else if (k == 2) {
+                    navAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
+                } else {
+                    collapsed = true
+                    drawBar()
+                }
+            }
+            val lp = LinearLayout.LayoutParams(dp(40), dp(40))
+            lp.leftMargin = dp(2)
+            bar.addView(v, lp)
+        }
+
+        // Heure et date
         val col = LinearLayout(c)
         col.orientation = LinearLayout.VERTICAL
         col.gravity = Gravity.END
@@ -270,10 +346,17 @@ class BarService : Service() {
         dt.textSize = 11f
         col.addView(t)
         col.addView(dt)
-        bar.addView(col)
+        val colLp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        colLp.leftMargin = dp(14)
+        bar.addView(col, colLp)
 
         return bar
     }
+
+    // ---------- Le tiroir d'applications ----------
 
     private fun toggleDrawer() {
         if (drawerView != null) {
@@ -301,7 +384,7 @@ class BarService : Service() {
         val m = c.resources.displayMetrics
         fun dp(v: Int): Int = (v * d).toInt()
 
-        val apps = loadApps()
+        val apps = Launcher.loadApps(this)
 
         val box = LinearLayout(c)
         box.orientation = LinearLayout.VERTICAL
